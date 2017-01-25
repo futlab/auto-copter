@@ -1,0 +1,6 @@
+[submodule "modules/apriltags"]
+	path = modules/apriltags
+	url = https://github.com/futlab/apriltags-cpp.git
+[submodule "modules/dso"]
+	path = modules/dso
+	url = https://github.com/futlab/dso.git
