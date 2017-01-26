@@ -5,121 +5,146 @@
 #include <opencv2/core.hpp>
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
+#include <opencv2/calib3d/calib3d.hpp>
 
-/* This callback function runs once per frame. Use it to perform any
- * quick processing you need, or have it put the frame into your application's
- * input queue. If this function takes too long, you'll start losing frames. */
-void cb(uvc_frame_t *frame, void *ptr) {
-  uvc_frame_t *bgr;
-  uvc_error_t ret;
-  /* We'll convert the image from YUV/JPEG to BGR, so allocate space */
-  printf("frame.width : %d\n", frame->width);
-  printf("frame.height : %d\n", frame->height);
-  printf("frame.format : %d\n", frame->frame_format);
+#include "v4l2cap.h"
 
-  bgr = uvc_allocate_frame(frame->width * frame->height * 3);
-  if (!bgr) {
-    printf("unable to allocate bgr frame!");
-    return;
-  }
-  /* Do the BGR conversion */
-  /*ret = uvc_any2bgr(frame, bgr);
-  if (ret) {
-    uvc_perror(ret, "uvc_any2bgr");
-    uvc_free_frame(bgr);
-    return;
-  }*/
-  /* Call a user function:
-   *
-   * my_type *my_obj = (*my_type) ptr;
-   * my_user_function(ptr, bgr);
-   * my_other_function(ptr, bgr->data, bgr->width, bgr->height);
-   */
-  /* Call a C++ method:
-   *
-   * my_type *my_obj = (*my_type) ptr;
-   * my_obj->my_func(bgr);
-   */
-  /* Use opencv.highgui to display the image: */
+#include "modules/apriltags/src/TagDetector.h"
+#include "modules/apriltags/src/CameraUtil.h"
 
-   cv::Mat cvImg(cv::Size(frame->width, frame->height), CV_8U, frame->data);
+V4L2Cap cap;
 
-   cv::namedWindow("Test", CV_WINDOW_AUTOSIZE);
-   cv::imshow("Test", cvImg);
-   cv::waitKey(1);
+TagDetectorParams params;
+cv::Point2d opticalCenter;
 
-   //cv::ReleaseImageHeader(&cvImg);*/
+int cvPose = 0;
 
-  uvc_free_frame(bgr);
-}
-int main1(int argc, char **argv) {
-  uvc_context_t *ctx;
-  uvc_device_t *dev;
-  uvc_device_handle_t *devh;
-  uvc_stream_ctrl_t ctrl;
-  uvc_error_t res;
-  /* Initialize a UVC service context. Libuvc will set up its own libusb
-   * context. Replace NULL with a libusb_context pointer to run libuvc
-   * from an existing libusb context. */
-  res = uvc_init(&ctx, NULL);
-  if (res < 0) {
-    uvc_perror(res, "uvc_init");
-    return res;
-  }
-  puts("UVC initialized");
-  /* Locates the first attached UVC device, stores in dev */
-  res = uvc_find_device(
-      ctx, &dev,
-      0, 0, NULL); /* filter devices: vendor_id, product_id, "serial_num" */
-  if (res < 0) {
-    uvc_perror(res, "uvc_find_device"); /* no devices found */
-  } else {
-    puts("Device found");
-    /* Try to open the device: requires exclusive access */
-    res = uvc_open(dev, &devh);
-    if (res < 0) {
-      uvc_perror(res, "uvc_open"); /* unable to open device */
-    } else {
-      puts("Device opened");
-      /* Print out a message containing all the information that libuvc
-       * knows about the device */
-      uvc_print_diag(devh, stderr);
-      /* Try to negotiate a 640x480 30 fps YUYV stream profile */
-      res = uvc_get_stream_ctrl_format_size(
-          devh, &ctrl, /* result stored in ctrl */
-          UVC_FRAME_FORMAT_ANY,//UVC_FRAME_FORMAT_YUYV, /* YUV 422, aka YUV 4:2:2. try _COMPRESSED */
-          640, 480, 80//30 /* width, height, fps */
-      );
-      /* Print out the result */
-      uvc_print_stream_ctrl(&ctrl, stderr);
-      if (res < 0) {
-        uvc_perror(res, "get_mode"); /* device doesn't provide a matching stream */
-      } else {
-        /* Start the video stream. The library will call user function cb:
-         *   cb(frame, (void*) 12345)
-         */
-        res = uvc_start_streaming(devh, &ctrl, cb, (void *) 12345, 0);
-        if (res < 0) {
-          uvc_perror(res, "start_streaming"); /* unable to start stream */
-        } else {
-          puts("Streaming...");
-          uvc_set_ae_mode(devh, 1); /* e.g., turn on auto exposure */
-          sleep(10); /* stream for 10 seconds */
-          /* End the stream. Blocks until last callback is serviced */
-          uvc_stop_streaming(devh);
-          puts("Done streaming.");
+void onImage(const void * data, int size)
+{
+    TagFamily family("Tag25h7");
+    family.setErrorRecoveryFraction(1.0);
+    TagDetector detector(family, params);
+    TagDetectionArray detections;
+    if (size < cap.width() * cap.height()) return;
+    cv::Mat frame(cv::Size(cap.width(), cap.height()), CV_8U, (void *)data);
+    if (frame.empty()) return;
+
+    detector.process(frame, opticalCenter, detections);
+
+    cv::Mat show = frame;
+    if (!detections.empty()) {
+        double s = 0.1905;//opts.tag_size;
+        double ss = 0.5*s;
+        double sz = s;
+
+        enum { npoints = 8, nedges = 12 };
+
+        cv::Point3d src[npoints] = {
+            cv::Point3d(-ss, -ss, 0),
+            cv::Point3d( ss, -ss, 0),
+            cv::Point3d( ss,  ss, 0),
+            cv::Point3d(-ss,  ss, 0),
+            cv::Point3d(-ss, -ss, sz),
+            cv::Point3d( ss, -ss, sz),
+            cv::Point3d( ss,  ss, sz),
+            cv::Point3d(-ss,  ss, sz),
+        };
+
+        int edges[nedges][2] = {
+            { 0, 1 },
+            { 1, 2 },
+            { 2, 3 },
+            { 3, 0 },
+
+            { 4, 5 },
+            { 5, 6 },
+            { 6, 7 },
+            { 7, 4 },
+
+            { 0, 4 },
+            { 1, 5 },
+            { 2, 6 },
+            { 3, 7 }
+        };
+
+        cv::Point2d dst[npoints];
+
+        double f = 500;//opts.focal_length;
+
+        double K[9] = {
+            f, 0, opticalCenter.x,
+            0, f, opticalCenter.y,
+            0, 0, 1
+        };
+
+        cv::Mat_<cv::Point3d> srcmat(npoints, 1, src);
+        cv::Mat_<cv::Point2d> dstmat(npoints, 1, dst);
+
+        cv::Mat_<double>      Kmat(3, 3, K);
+
+        cv::Mat_<double>      distCoeffs = cv::Mat_<double>::zeros(4,1);
+
+        for (size_t i=0; i<detections.size(); ++i) {
+
+            if (1) {
+
+                cv::Mat r, t;
+
+                if (cvPose) {
+                    CameraUtil::homographyToPoseCV(f, f, s, detections[i].homography, r, t);
+                } else {
+
+                    cv::Mat_<double> M =
+                            CameraUtil::homographyToPose(f, f, s,
+                                                         detections[i].homography,
+                                                         false);
+
+                    cv::Mat_<double> R = M.rowRange(0,3).colRange(0, 3);
+
+                    t = M.rowRange(0,3).col(3);
+
+                    cv::Rodrigues(R, r);
+
+                }
+
+                cv::projectPoints(srcmat, r, t, Kmat, distCoeffs, dstmat);
+
+                for (int j=0; j<nedges; ++j) {
+                    cv::line(show,
+                             dstmat(edges[j][0],0),
+                            dstmat(edges[j][1],0),
+                            cvPose ? CV_RGB(0,255,0) : CV_RGB(255,0,0),
+                            1, CV_AA);
+                }
+            }
         }
-      }
-      /* Release our handle on the device */
-      uvc_close(devh);
-      puts("Device closed");
     }
-    /* Release the device descriptor */
-    uvc_unref_device(dev);
-  }
-  /* Close the UVC context. This closes and cleans up any existing device handles,
-   * and it closes the libusb context if one was not provided. */
-  uvc_exit(ctx);
-  puts("UVC exited");
-  return 0;
+
+    cv::imshow("win", show);
+    int k = cv::waitKey(1);
+    if (k % 256 == 'p') {
+        cvPose = !cvPose;
+    } else if (k % 256 == 27 /* ESC */) {
+        return;
+    }
+}
+
+void initAprilTags()
+{
+
+}
+
+int main()
+{
+    if(!cap.openDevice("/dev/video0")) return -1;
+    if(!cap.initDevice(&onImage)) return -1;
+    opticalCenter.x = cap.width() * 0.5;
+    opticalCenter.y = cap.height() * 0.5;
+
+    if(!cap.start()) return -1;
+    cap.loop();
+    cap.stop();
+    cap.uninitDevice();
+    cap.closeDevice();
+    //fprintf(stderr, "\n");
 }

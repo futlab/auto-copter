@@ -35,9 +35,8 @@ struct buffer {
         size_t  length;
 };
 
-static char            *deviceName;
+const char            *deviceName;
 static enum IOMethod   io = IO_METHOD_MMAP;
-static int              fd = -1;
 struct buffer          *buffers;
 static unsigned int     n_buffers;
 static int              out_buf;
@@ -61,7 +60,7 @@ static int xioctl(int fh, int request, void *arg)
     return r;
 }
 
-static void process_image(const void *p, int size)
+static void processImage(const void *p, int size)
 {
     //printf("size: %d", size);
     if(size < 1280) return;
@@ -78,7 +77,7 @@ static void process_image(const void *p, int size)
         fflush(stdout);
 }
 
-static bool read_frame(void)
+bool V4L2Cap::readFrame(void)
 {
     struct v4l2_buffer buf;
     unsigned int i;
@@ -96,11 +95,11 @@ static bool read_frame(void)
                 /* fall through */
 
             default:
-                errno_exit("read");
+                return errno_exit("read");
             }
         }
 
-        process_image(buffers[0].start, buffers[0].length);
+        processImage(buffers[0].start, buffers[0].length);
         break;
 
     case IO_METHOD_MMAP:
@@ -120,16 +119,16 @@ static bool read_frame(void)
                 /* fall through */
 
             default:
-                errno_exit("VIDIOC_DQBUF");
+                return errno_exit("VIDIOC_DQBUF");
             }
         }
 
         assert(buf.index < n_buffers);
 
-        process_image(buffers[buf.index].start, buf.bytesused);
+        processImage(buffers[buf.index].start, buf.bytesused);
 
         if (-1 == xioctl(fd, VIDIOC_QBUF, &buf))
-            errno_exit("VIDIOC_QBUF");
+            return errno_exit("VIDIOC_QBUF");
         break;
 
     case IO_METHOD_USERPTR:
@@ -160,7 +159,7 @@ static bool read_frame(void)
 
         assert(i < n_buffers);
 
-        process_image((void *)buf.m.userptr, buf.bytesused);
+        processImage((void *)buf.m.userptr, buf.bytesused);
 
         if (-1 == xioctl(fd, VIDIOC_QBUF, &buf))
             return errno_exit("VIDIOC_QBUF");
@@ -196,7 +195,7 @@ bool V4L2Cap::getFrame()
         exit(EXIT_FAILURE);
     }
 
-    return read_frame();
+    return readFrame();
 }
 
 void V4L2Cap::loop(void)
@@ -213,22 +212,23 @@ void V4L2Cap::loop(void)
     }
 }
 
-static bool stop_capturing(void)
+bool V4L2Cap::stop(void)
 {
-        enum v4l2_buf_type type;
+    enum v4l2_buf_type type;
 
-        switch (io) {
-        case IO_METHOD_READ:
-                /* Nothing to do. */
-                break;
+    switch (io) {
+    case IO_METHOD_READ:
+        /* Nothing to do. */
+        break;
 
-        case IO_METHOD_MMAP:
-        case IO_METHOD_USERPTR:
-                type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-                if (-1 == xioctl(fd, VIDIOC_STREAMOFF, &type))
-                        return errno_exit("VIDIOC_STREAMOFF");
-                break;
-        }
+    case IO_METHOD_MMAP:
+    case IO_METHOD_USERPTR:
+        type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        if (-1 == xioctl(fd, VIDIOC_STREAMOFF, &type))
+            return errno_exit("VIDIOC_STREAMOFF");
+        break;
+    }
+    return true;
 }
 
 bool V4L2Cap::start(void)
@@ -276,49 +276,50 @@ bool V4L2Cap::start(void)
     return true;
 }
 
-static void uninit_device(void)
+bool V4L2Cap::uninitDevice(void)
 {
-        unsigned int i;
+    unsigned int i;
 
-        switch (io) {
-        case IO_METHOD_READ:
-                free(buffers[0].start);
-                break;
+    switch (io) {
+    case IO_METHOD_READ:
+        free(buffers[0].start);
+        break;
 
-        case IO_METHOD_MMAP:
-                for (i = 0; i < n_buffers; ++i)
-                        if (-1 == munmap(buffers[i].start, buffers[i].length))
-                                errno_exit("munmap");
-                break;
+    case IO_METHOD_MMAP:
+        for (i = 0; i < n_buffers; ++i)
+            if (-1 == munmap(buffers[i].start, buffers[i].length))
+                return errno_exit("munmap");
+        break;
 
-        case IO_METHOD_USERPTR:
-                for (i = 0; i < n_buffers; ++i)
-                        free(buffers[i].start);
-                break;
-        }
+    case IO_METHOD_USERPTR:
+        for (i = 0; i < n_buffers; ++i)
+            free(buffers[i].start);
+        break;
+    }
 
-        free(buffers);
+    free(buffers);
+    return false;
 }
 
-static void init_read(unsigned int buffer_size)
+static void init_read(unsigned int bufferSize)
 {
-        buffers = (buffer *) calloc(1, sizeof(*buffers));
+    buffers = (buffer *) calloc(1, sizeof(*buffers));
 
-        if (!buffers) {
-                fprintf(stderr, "Out of memory\n");
-                exit(EXIT_FAILURE);
-        }
+    if (!buffers) {
+        fprintf(stderr, "Out of memory\n");
+        exit(EXIT_FAILURE);
+    }
 
-        buffers[0].length = buffer_size;
-        buffers[0].start = malloc(buffer_size);
+    buffers[0].length = bufferSize;
+    buffers[0].start = malloc(bufferSize);
 
-        if (!buffers[0].start) {
-                fprintf(stderr, "Out of memory\n");
-                exit(EXIT_FAILURE);
-        }
+    if (!buffers[0].start) {
+        fprintf(stderr, "Out of memory\n");
+        exit(EXIT_FAILURE);
+    }
 }
 
-static void init_mmap(void)
+bool V4L2Cap::initMMap(void)
 {
     struct v4l2_requestbuffers req;
 
@@ -334,7 +335,7 @@ static void init_mmap(void)
                             "memory mapping\n", deviceName);
             exit(EXIT_FAILURE);
         } else {
-            errno_exit("VIDIOC_REQBUFS");
+            return errno_exit("VIDIOC_REQBUFS");
         }
     }
 
@@ -360,7 +361,7 @@ static void init_mmap(void)
         buf.index       = n_buffers;
 
         if (-1 == xioctl(fd, VIDIOC_QUERYBUF, &buf))
-            errno_exit("VIDIOC_QUERYBUF");
+            return errno_exit("VIDIOC_QUERYBUF");
 
         buffers[n_buffers].length = buf.length;
         buffers[n_buffers].start =
@@ -371,11 +372,11 @@ static void init_mmap(void)
                      fd, buf.m.offset);
 
         if (MAP_FAILED == buffers[n_buffers].start)
-            errno_exit("mmap");
+            return errno_exit("mmap");
     }
 }
 
-static void init_userp(unsigned int buffer_size)
+void V4L2Cap::initUserp(unsigned int buffer_size)
 {
     struct v4l2_requestbuffers req;
 
@@ -413,7 +414,7 @@ static void init_userp(unsigned int buffer_size)
     }
 }
 
-bool V4L2Cap::initDevice(void)
+bool V4L2Cap::initDevice(void (* pi) (const void *p, int size))
 {
     struct v4l2_capability cap;
     struct v4l2_cropcap cropcap;
@@ -501,21 +502,23 @@ bool V4L2Cap::initDevice(void)
     min = fmt.fmt.pix.bytesperline * fmt.fmt.pix.height;
     if (fmt.fmt.pix.sizeimage < min) fmt.fmt.pix.sizeimage = min;
 
-    switch (io) {
-    case IO_METHOD_READ:    init_read(fmt.fmt.pix.sizeimage);   break;
-    case IO_METHOD_MMAP:    init_mmap();                        break;
-    case IO_METHOD_USERPTR: init_userp(fmt.fmt.pix.sizeimage);  break;
-    }
+    width_  = fmt.fmt.pix.width;
+    height_ = fmt.fmt.pix.height;
 
+    switch (io) {
+    case IO_METHOD_READ:    init_read(fmt.fmt.pix.sizeimage);  break;
+    case IO_METHOD_MMAP:    initMMap();                        break;
+    case IO_METHOD_USERPTR: initUserp(fmt.fmt.pix.sizeimage);  break;
+    }
+    processImage = pi;
     return true;
 }
 
-static void close_device(void)
+bool V4L2Cap::closeDevice(void)
 {
-    if (-1 == close(fd))
-        errno_exit("close");
-
+    if (-1 == close(fd)) return errno_exit("close");
     fd = -1;
+    return true;
 }
 
 bool V4L2Cap::openDevice(const char * deviceName)
@@ -574,7 +577,7 @@ long_options[] = {
         { 0, 0, 0, 0 }
 };
 
-int main(int argc, char **argv)
+int main2(int argc, char **argv)
 {
         deviceName = "/dev/video0";
 
@@ -636,12 +639,12 @@ int main(int argc, char **argv)
         V4L2Cap cap;
 
         if(!cap.openDevice(deviceName)) return -1;
-        if(!cap.initDevice()) return -1;
+        if(!cap.initDevice(&processImage)) return -1;
         if(!cap.start()) return -1;
         cap.loop();
-        stop_capturing();
-        uninit_device();
-        close_device();
+        cap.stop();
+        cap.uninitDevice();
+        cap.closeDevice();
         fprintf(stderr, "\n");
         return 0;
 }
