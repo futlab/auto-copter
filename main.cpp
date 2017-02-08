@@ -11,6 +11,8 @@
 
 #include "modules/apriltags/src/TagDetector.h"
 #include "modules/apriltags/src/CameraUtil.h"
+#include "visualizer.h"
+#include "conveyor.h"
 
 V4L2Cap cap;
 
@@ -19,7 +21,26 @@ cv::Point2d opticalCenter;
 
 int cvPose = 0;
 
+flyflow::Visualizer vis("vis");
+flyflow::Conveyor conv(&vis);
+
+
 void onImage(const void * data, int size)
+{
+    if (size < cap.width() * cap.height()) return;
+    cv::Mat frame(cv::Size(cap.width(), cap.height()), CV_8U, (void *)data);
+    imshow("Image", frame);
+
+    cv::Mat cr = conv.onImage(frame);
+    if (!cr.empty())
+        imshow("Conv result", cr);
+    vis.show();
+
+
+    cv::waitKey(1);
+}
+
+/*void onImage(const void * data, int size)
 {
     TagFamily family("Tag25h7");
     family.setErrorRecoveryFraction(1.0);
@@ -124,15 +145,10 @@ void onImage(const void * data, int size)
     int k = cv::waitKey(1);
     if (k % 256 == 'p') {
         cvPose = !cvPose;
-    } else if (k % 256 == 27 /* ESC */) {
+    } else if (k % 256 == 27) {
         return;
     }
-}
-
-void initAprilTags()
-{
-
-}
+}*/
 
 int main()
 {
