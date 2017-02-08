@@ -4,3 +4,6 @@
 [submodule "modules/dso"]
 	path = modules/dso
 	url = https://github.com/futlab/dso.git
+[submodule "modules/witrack"]
+	path = modules/witrack
+	url = https://github.com/futlab/witrack
